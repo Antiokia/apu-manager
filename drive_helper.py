@@ -1,52 +1,143 @@
 """
-drive_helper.py
----------------
-Sube un archivo a una carpeta específica de Google Drive
-usando una Service Account configurada en st.secrets.
+drive_helper.py  —  OAuth 2.0 (funciona con Google Drive personal)
+-------------------------------------------------------------------
+Flujo:
+  1. Primera vez: genera un URL de autorización → el admin lo abre,
+     autoriza, copia el código de vuelta a Secrets.
+  2. De ahí en adelante: usa el refresh_token guardado en Secrets.
 
-Configuración en Streamlit Cloud → Secrets:
-[gcp_service_account]
-type = "service_account"
-project_id = "..."
-private_key_id = "..."
-private_key = "-----BEGIN RSA PRIVATE KEY-----\n..."
-client_email = "..."
-client_id = "..."
-...
+Secrets necesarios en Streamlit Cloud:
+---------------------------------------
+[oauth]
+client_id     = "xxxx.apps.googleusercontent.com"
+client_secret = "GOCSPX-..."
+refresh_token = ""          # vacío la primera vez
 
 [drive]
-folder_id = "ID_DE_TU_CARPETA_EN_DRIVE"
+folder_id = "ID_DE_TU_CARPETA"
 """
 
 import io
 import json
 import streamlit as st
-from google.oauth2 import service_account
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
-
+from google_auth_oauthlib.flow import Flow
 
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+REDIRECT_URI = "urn:ietf:wg:oauth:2.0:oob"   # modo "copiar código"
+
+
+# ─────────────────────────────────────────────
+# HELPERS DE SECRETS
+# ─────────────────────────────────────────────
+
+def _oauth_secrets():
+    return st.secrets["oauth"]
+
+def _folder_id():
+    return st.secrets["drive"]["folder_id"]
+
+def drive_configurado() -> bool:
+    try:
+        s = _oauth_secrets()
+        _ = s["client_id"]
+        _ = s["client_secret"]
+        _ = _folder_id()
+        return True
+    except Exception:
+        return False
+
+def _tiene_refresh_token() -> bool:
+    try:
+        rt = _oauth_secrets().get("refresh_token", "")
+        return bool(rt and str(rt).strip())
+    except Exception:
+        return False
+
+
+# ─────────────────────────────────────────────
+# OBTENER CREDENCIALES
+# ─────────────────────────────────────────────
+
+def _get_credentials() -> Credentials:
+    s = _oauth_secrets()
+    creds = Credentials(
+        token         = None,
+        refresh_token = str(s["refresh_token"]).strip(),
+        token_uri     = "https://oauth2.googleapis.com/token",
+        client_id     = str(s["client_id"]).strip(),
+        client_secret = str(s["client_secret"]).strip(),
+        scopes        = SCOPES,
+    )
+    # Refrescar el access token
+    creds.refresh(Request())
+    return creds
 
 
 def _get_service():
-    """Construye el cliente de Drive desde st.secrets."""
-    info = dict(st.secrets["gcp_service_account"])
-    # Streamlit escapa los \n en la clave privada — los restauramos
-    info["private_key"] = info["private_key"].replace("\\n", "\n")
-    creds = service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
+    creds = _get_credentials()
     return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 
-def subir_a_drive(file_bytes: bytes, nombre_archivo: str) -> str:
-    """
-    Sube file_bytes a la carpeta configurada en st.secrets[drive][folder_id].
-    Devuelve el link público del archivo en Drive.
-    """
-    service   = _get_service()
-    folder_id = st.secrets["drive"]["folder_id"]
+# ─────────────────────────────────────────────
+# GENERAR URL DE AUTORIZACIÓN (primera vez)
+# ─────────────────────────────────────────────
 
-    # Detectar MIME type por extensión
+def generar_url_autorizacion() -> str:
+    s = _oauth_secrets()
+    client_config = {
+        "installed": {
+            "client_id":     str(s["client_id"]).strip(),
+            "client_secret": str(s["client_secret"]).strip(),
+            "auth_uri":      "https://accounts.google.com/o/oauth2/auth",
+            "token_uri":     "https://oauth2.googleapis.com/token",
+            "redirect_uris": [REDIRECT_URI],
+        }
+    }
+    flow = Flow.from_client_config(
+        client_config,
+        scopes=SCOPES,
+        redirect_uri=REDIRECT_URI,
+    )
+    auth_url, _ = flow.authorization_url(
+        access_type="offline",
+        prompt="consent",
+    )
+    return auth_url
+
+
+def obtener_refresh_token(codigo: str) -> str:
+    """Intercambia el código de autorización por un refresh_token."""
+    s = _oauth_secrets()
+    client_config = {
+        "installed": {
+            "client_id":     str(s["client_id"]).strip(),
+            "client_secret": str(s["client_secret"]).strip(),
+            "auth_uri":      "https://accounts.google.com/o/oauth2/auth",
+            "token_uri":     "https://oauth2.googleapis.com/token",
+            "redirect_uris": [REDIRECT_URI],
+        }
+    }
+    flow = Flow.from_client_config(
+        client_config,
+        scopes=SCOPES,
+        redirect_uri=REDIRECT_URI,
+    )
+    flow.fetch_token(code=codigo.strip())
+    return flow.credentials.refresh_token
+
+
+# ─────────────────────────────────────────────
+# SUBIR ARCHIVO
+# ─────────────────────────────────────────────
+
+def subir_a_drive(file_bytes: bytes, nombre_archivo: str) -> str:
+    service   = _get_service()
+    folder_id = _folder_id()
+
     ext = nombre_archivo.rsplit(".", 1)[-1].lower()
     mime_map = {
         "xlsm": "application/vnd.ms-excel.sheet.macroEnabled.12",
@@ -55,10 +146,7 @@ def subir_a_drive(file_bytes: bytes, nombre_archivo: str) -> str:
     }
     mime_type = mime_map.get(ext, "application/octet-stream")
 
-    file_metadata = {
-        "name":    nombre_archivo,
-        "parents": [folder_id],
-    }
+    file_metadata = {"name": nombre_archivo, "parents": [folder_id]}
     media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype=mime_type, resumable=False)
 
     uploaded = service.files().create(
@@ -68,13 +156,3 @@ def subir_a_drive(file_bytes: bytes, nombre_archivo: str) -> str:
     ).execute()
 
     return uploaded.get("webViewLink", "")
-
-
-def drive_configurado() -> bool:
-    """True si existen los secrets necesarios."""
-    try:
-        _ = st.secrets["gcp_service_account"]
-        _ = st.secrets["drive"]["folder_id"]
-        return True
-    except Exception:
-        return False

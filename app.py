@@ -1,7 +1,11 @@
 import streamlit as st
 import pandas as pd
 from engine import procesar_archivo
-from drive_helper import subir_a_drive, drive_configurado
+from drive_helper import (
+    subir_a_drive, drive_configurado,
+    generar_url_autorizacion, obtener_refresh_token,
+    _tiene_refresh_token
+)
 
 # ── CONFIG ────────────────────────────────────────────────────
 st.set_page_config(
@@ -327,6 +331,64 @@ with col_info:
         {drive_badge}
     </div>
     """, unsafe_allow_html=True)
+
+
+# ── PANEL OAUTH (solo si Drive configurado pero sin refresh_token) ──
+if drive_configurado() and not _tiene_refresh_token():
+    st.markdown("""
+    <div style="background:#1c2128; border:1px solid #FFB400; border-radius:10px;
+                padding:20px 24px; margin-bottom:24px;">
+        <div style="font-family:'Barlow Condensed',sans-serif; font-size:16px;
+                    font-weight:700; color:#FFB400; margin-bottom:8px; letter-spacing:1px;">
+            🔑 AUTORIZACIÓN DE GOOGLE DRIVE PENDIENTE
+        </div>
+        <div style="font-size:13px; color:#8b949e; margin-bottom:16px;">
+            Solo debes hacer esto <b style="color:#c9d1d9">una vez</b>.
+            Sigue los pasos para conectar tu Drive personal.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col_auth1, col_auth2 = st.columns([1, 1])
+
+    with col_auth1:
+        if st.button("1️⃣  Generar link de autorización", use_container_width=True):
+            try:
+                url = generar_url_autorizacion()
+                st.session_state["auth_url"] = url
+            except Exception as e:
+                st.error(f"Error generando URL: {e}")
+
+        if "auth_url" in st.session_state:
+            st.markdown(f"""
+            <div style="background:#0d1117; border:1px solid #30363d; border-radius:8px;
+                        padding:12px; margin-top:8px; word-break:break-all;">
+                <div style="font-size:11px; color:#8b949e; margin-bottom:6px;">Abre este link en tu navegador:</div>
+                <a href="{st.session_state['auth_url']}" target="_blank"
+                   style="color:#58a6ff; font-size:12px;">
+                    🔗 Abrir autorización de Google
+                </a>
+            </div>
+            """, unsafe_allow_html=True)
+
+    with col_auth2:
+        codigo = st.text_input(
+            "2️⃣  Pega aquí el código que te dio Google",
+            placeholder="4/0AX4XfWi...",
+        )
+        if st.button("Conectar Drive ✓", use_container_width=True):
+            if codigo:
+                try:
+                    rt = obtener_refresh_token(codigo)
+                    st.success("✅ ¡Conectado! Copia este refresh_token en tus Secrets de Streamlit:")
+                    st.code(f'[oauth]\nrefresh_token = "{rt}"', language="toml")
+                    st.info("Después de pegarlo en Secrets, la app se reconecta sola.")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+            else:
+                st.warning("Pega el código primero.")
+
+    st.divider()
 
 
 # ── PROCESAMIENTO ─────────────────────────────
