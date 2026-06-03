@@ -309,7 +309,17 @@ with col_up:
     )
 
 with col_info:
-    st.markdown("""
+    drive_ok = drive_configurado()
+    drive_badge = (
+        '<div style="margin-top:10px; display:flex; align-items:center; gap:8px;">'
+        '<div style="width:8px;height:8px;border-radius:50%;background:#2ea043;flex-shrink:0;"></div>'
+        '<span style="font-size:12px; color:#2ea043; font-weight:600;">Google Drive conectado</span></div>'
+        if drive_ok else
+        '<div style="margin-top:10px; display:flex; align-items:center; gap:8px;">'
+        '<div style="width:8px;height:8px;border-radius:50%;background:#484f58;flex-shrink:0;"></div>'
+        '<span style="font-size:12px; color:#484f58;">Google Drive no configurado</span></div>'
+    )
+    st.markdown(f"""
     <div style="background:#161b22; border:1px solid #21262d; border-radius:12px; padding:20px; margin-top:8px;">
         <div style="font-family:'Barlow Condensed',sans-serif; font-size:15px; font-weight:700; color:#FFB400; margin-bottom:12px; letter-spacing:1px;">REQUISITOS DEL ARCHIVO</div>
         <div style="font-size:13px; color:#8b949e; line-height:1.8;">
@@ -318,6 +328,7 @@ with col_info:
             ✓ &nbsp;Hoja <b style="color:#c9d1d9">AUX</b> con tabla de categorías<br>
             ✓ &nbsp;Formatos <b style="color:#c9d1d9">.xlsm · .xlsx · .xls</b>
         </div>
+        {drive_badge}
     </div>
     """, unsafe_allow_html=True)
 
@@ -388,12 +399,14 @@ if archivo is not None:
         with st.spinner("Procesando APUs..."):
             tabla, subtotales, total_general, excel_bytes, items_info, cats = procesar_archivo(file_bytes)
 
-        # ── SUBIDA A DRIVE (silenciosa) ────────
+        # ── SUBIDA A DRIVE ─────────────────────
         if drive_configurado():
             try:
-                subir_a_drive(file_bytes, archivo.name)
-            except Exception:
-                pass
+                with st.spinner("Guardando en Google Drive..."):
+                    link_drive = subir_a_drive(file_bytes, archivo.name)
+                st.success(f"✅ Guardado en Drive · [Abrir archivo]({link_drive})")
+            except Exception as e_drive:
+                st.warning(f"⚠️ No se pudo guardar en Drive: {e_drive}")
 
         # ── KPIs ──────────────────────────────
         n_items     = len(items_info)
